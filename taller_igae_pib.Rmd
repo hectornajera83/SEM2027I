@@ -1,0 +1,363 @@
+---
+title: "Error de medición con dos mediciones: IGAE y PIB"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(lme4)       # modelos de efectos aleatorios
+library(lavaan)     # SEM
+library(semTools)   # confiabilidad con SEM
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# 1. La idea
+
+INEGI mide la actividad económica de dos formas:
+
+- El **IGAE** (Indicador Global de la Actividad Económica), mensual. Aquí usamos su promedio trimestral.
+- El **PIB** trimestral.
+
+Ambos miden lo mismo: cuánto creció la economía. Pero se construyen con información parcialmente distinta, así que sus primeras cifras no coinciden. Si los dos miden la misma actividad y no coinciden, al menos uno tiene error.
+
+Ninguno de los dos es la verdad. Los tratamos como **dos mediciones con error de una actividad económica que no observamos**:
+
+$$y_{tj} = \mu + u_t + e_{tj}$$
+
+- $y_{tj}$: crecimiento anual medido por el indicador $j$ (IGAE o PIB) en el trimestre $t$.
+- $\mu$: crecimiento promedio.
+- $u_t$: crecimiento **verdadero** del trimestre $t$, como desviación de $\mu$. Su varianza es $\sigma^2_u$.
+- $e_{tj}$: **error aleatorio** de la medición $j$. Su varianza es $\sigma^2_e$.
+
+La varianza de cada medición se descompone en dos partes:
+
+$$\text{Var}(y) = \sigma^2_u + \sigma^2_e$$
+
+La **confiabilidad** es la proporción que es varianza verdadera:
+
+$$\rho = \frac{\sigma^2_u}{\sigma^2_u + \sigma^2_e}$$
+
+**Supuestos importantes:**
+
+- Usamos las **primeras cifras** publicadas de cada indicador, antes de que INEGI concilie el IGAE con el PIB. Con las series revisadas el ejemplo no funciona: ya fueron ajustadas para coincidir.
+- Suponemos que los errores del IGAE y del PIB son **independientes** (no comparten fuentes de error) y del **mismo tamaño**. En la realidad comparten parte de la información y el PIB probablemente es más preciso; aquí lo simplificamos.
+
+# 2. Los datos
+
+Tenemos 100 trimestres (2001–2025) con el crecimiento anual de la actividad medido por el IGAE y por el PIB.
+
+| Variable | Descripción |
+|---|---|
+| `trimestre` | Trimestre |
+| `igae` | Crecimiento anual según el IGAE, primera cifra (%) |
+| `pib` | Crecimiento anual según el PIB, primera cifra (%) |
+| `verdadero` | Crecimiento **verdadero** de la actividad (%) |
+| `desempleo` | Cambio anual en la tasa de desempleo (puntos porcentuales), para la sección 6 |
+
+Los datos son simulados. Por eso conocemos `verdadero`; con datos reales nunca se observa. Aquí lo usamos para verificar que los métodos funcionan.
+
+```{r datos}
+d <- read.csv("igae_pib.csv")
+head(d)
+```
+
+# 3. Test-retest: la correlación entre IGAE y PIB
+
+Si el IGAE y el PIB miden lo mismo, con errores independientes y del mismo tamaño, su correlación es la confiabilidad de cada uno. La lógica: lo único que tienen en común es la actividad verdadera, así que su covarianza es $\sigma^2_u$, y cada varianza es $\sigma^2_u + \sigma^2_e$.
+
+```{r retest}
+plot(d$igae, d$pib, pch = 16, col = rgb(0, 0, 1, .5),
+     xlab = "Crecimiento según IGAE (%)", ylab = "Crecimiento según PIB (%)")
+abline(0, 1, col = "red")
+
+cor(d$igae, d$pib)
+```
+
+Si no hubiera error, todos los puntos estarían sobre la diagonal. La dispersión alrededor de ella es el error.
+
+# 4. Modelo de efectos aleatorios
+
+Ponemos los datos en **formato largo** (una fila por medición):
+
+```{r largo}
+largo <- data.frame(trimestre = rep(d$trimestre, 2),
+                    indicador = rep(c("igae", "pib"), each = nrow(d)),
+                    y         = c(d$igae, d$pib))
+head(largo[order(largo$trimestre), ], 6)
+```
+
+El modelo $y_{tj} = \mu + u_t + e_{tj}$ es un modelo con un **efecto aleatorio** por trimestre:
+
+```{r lmer}
+m_re <- lmer(y ~ 1 + (1 | trimestre), data = largo)
+summary(m_re)
+```
+
+En **Random effects**, `trimestre (Intercept)` es $\sigma^2_u$ (varianza del crecimiento verdadero) y `Residual` es $\sigma^2_e$ (varianza del error).
+
+```{r icc}
+vc    <- as.data.frame(VarCorr(m_re))
+var_u <- vc$vcov[vc$grp == "trimestre"]
+var_e <- vc$vcov[vc$grp == "Residual"]
+
+c(var_u = var_u, var_e = var_e, ICC = var_u / (var_u + var_e))
+```
+
+El **ICC** es la confiabilidad de **una** medición (el IGAE o el PIB por separado). Coincide, salvo diferencias pequeñas de estimación, con la correlación de la sección 3.
+
+# 5. El mismo modelo en SEM
+
+En formato ancho, el modelo es un factor con dos indicadores:
+
+- El factor `A` es la actividad verdadera ($u_t$). Su varianza es $\sigma^2_u$.
+- IGAE y PIB son sus indicadores, con **cargas fijadas en 1**.
+- **Errores iguales** (etiqueta `e`) e **interceptos iguales** (etiqueta `m`): ninguno es más preciso ni mide sistemáticamente más alto.
+
+```{r sem}
+mod <- '
+  A =~ 1*igae + 1*pib     # actividad económica verdadera
+
+  igae ~~ e*igae          # error aleatorio, igual en ambos
+  pib  ~~ e*pib
+
+  igae ~ m*1              # crecimiento promedio (mu)
+  pib  ~ m*1
+'
+fit <- sem(mod, data = d)
+summary(fit)
+```
+
+**¿Por qué tantas restricciones?** Con dos indicadores solo tenemos tres datos sobre su relación: dos varianzas y una covarianza. Un factor con cargas y errores libres tendría más parámetros que datos, y el modelo no estaría identificado. Por eso con dos mediciones hacen falta supuestos; con más mediciones se pueden relajar.
+
+Comparamos con el modelo de efectos aleatorios, estimado también por máxima verosimilitud (`REML = FALSE`), que es lo que usa `lavaan`:
+
+```{r sem-vs-lmer}
+m_ml  <- lmer(y ~ 1 + (1 | trimestre), data = largo, REML = FALSE)
+vc_ml <- as.data.frame(VarCorr(m_ml))
+pe    <- parameterEstimates(fit)
+
+data.frame(
+  parametro     = c("mu", "var_u", "var_e"),
+  efectos_aleat = c(fixef(m_ml), vc_ml$vcov[vc_ml$grp == "trimestre"],
+                    vc_ml$vcov[vc_ml$grp == "Residual"]),
+  SEM           = c(pe$est[pe$label == "m"][1],
+                    pe$est[pe$lhs == "A" & pe$op == "~~"],
+                    pe$est[pe$label == "e"][1])
+)
+```
+
+Son el mismo modelo.
+
+## 5.1 ¿El modelo ajusta?
+
+Antes de usar los resultados de un SEM hay que revisar si el modelo reproduce los datos. Primero, la salida completa con los índices de ajuste:
+
+```{r ajuste}
+summary(fit, fit.measures = TRUE)
+```
+
+Extraemos los índices principales:
+
+```{r ajuste-indices}
+fitMeasures(fit, c("chisq", "df", "pvalue", "cfi", "tli", "rmsea", "srmr"))
+```
+
+Criterios orientativos: p-valor del chi-cuadrado mayor a .05, CFI y TLI ≥ .95, RMSEA ≤ .06, SRMR ≤ .08.
+
+### ¿Qué está probando el ajuste?
+
+Con dos indicadores, los datos son cinco números: dos medias, dos varianzas y una covarianza. El modelo paralelo estima tres parámetros ($\mu$, $\sigma^2_u$, $\sigma^2_e$), así que le sobran 2 grados de libertad. Esos dos grados de libertad corresponden a dos predicciones del modelo:
+
+1. **Las medias son iguales:** si ninguna medición sobreestima o subestima, el IGAE y el PIB deben tener el mismo promedio.
+2. **Las varianzas son iguales:** si ambos tienen el mismo error, deben variar lo mismo.
+
+Comparamos lo observado con lo que predice el modelo:
+
+```{r ajuste-momentos}
+obs <- lavInspect(fit, "sampstat")
+imp <- lavInspect(fit, "implied")
+
+data.frame(
+  momento   = c("Media IGAE", "Media PIB", "Varianza IGAE", "Varianza PIB", "Covarianza"),
+  observado = c(obs$mean, diag(obs$cov), obs$cov[1, 2]),
+  modelo    = c(imp$mean, diag(imp$cov), imp$cov[1, 2]))
+```
+
+El modelo predice la misma media y la misma varianza para ambos indicadores. Si las observadas difieren mucho, el ajuste empeora.
+
+Podemos probar cada predicción por separado, liberando una restricción a la vez y comparando con el modelo paralelo:
+
+```{r ajuste-pruebas}
+mod_err <- '
+  A =~ 1*igae + 1*pib
+  igae ~~ igae            # errores distintos
+  pib  ~~ pib
+  igae ~ m*1
+  pib  ~ m*1
+'
+mod_int <- '
+  A =~ 1*igae + 1*pib
+  igae ~~ e*igae
+  pib  ~~ e*pib
+  igae ~ 1                # interceptos distintos
+  pib  ~ 1
+'
+fit_err <- sem(mod_err, data = d)
+fit_int <- sem(mod_int, data = d)
+
+lavTestLRT(fit, fit_err)    # ¿errores iguales?
+lavTestLRT(fit, fit_int)    # ¿interceptos iguales?
+```
+
+Un p-valor alto indica que la restricción es compatible con los datos.
+
+### Lo que el ajuste no puede detectar
+
+Con dos indicadores, el ajuste **no puede probar que los errores sean independientes**. Si el IGAE y el PIB compartieran parte de su error (por ejemplo, porque usan las mismas fuentes), su covarianza sería:
+
+$$\text{Cov}(\text{IGAE}, \text{PIB}) = \sigma^2_u + \text{Cov}(e_1, e_2)$$
+
+El modelo no tiene forma de separar esos dos términos: atribuiría todo a $\sigma^2_u$, sobreestimaría la varianza verdadera y, con ella, la confiabilidad. El ajuste sería igual de bueno. Por eso el supuesto de errores independientes se justifica con lo que sabemos de cómo se construyen los indicadores, no con los índices de ajuste.
+
+**Dos advertencias sobre los índices:**
+
+- Con tan pocos grados de libertad, el RMSEA es muy inestable: puede salir alto aunque el modelo sea razonable, o cero aunque no lo sea.
+- Un buen ajuste dice que el modelo es **compatible** con los datos, no que sea el correcto.
+
+## 5.2 Una medición o el promedio de las dos
+
+La confiabilidad depende de **qué número usemos** para cada trimestre:
+
+- Si usamos **solo el IGAE** (o solo el PIB), la confiabilidad es el ICC. En SEM es el $R^2$ de cada indicador.
+- Si usamos **el promedio del IGAE y el PIB**, el error se divide entre 2, porque los errores aleatorios se compensan en parte. La confiabilidad es $\sigma^2_u / (\sigma^2_u + \sigma^2_e/2)$ (Spearman-Brown). En SEM es omega.
+
+```{r confiabilidad}
+# Componentes de varianza del modelo multinivel (estimado por ML)
+var_u_ml <- vc_ml$vcov[vc_ml$grp == "trimestre"]   # varianza verdadera entre trimestres
+var_e_ml <- vc_ml$vcov[vc_ml$grp == "Residual"]    # varianza del error de una medición
+
+# El "número" que usaríamos si promediamos las dos mediciones
+d$promedio <- (d$igae + d$pib) / 2
+
+data.frame(
+  numero_usado       = c("Una medición", "Promedio de las dos"),
+
+  # Efectos aleatorios:
+  #  - una medición: ICC = var_u / (var_u + var_e)
+  #  - promedio de 2: el error se divide entre 2 (Spearman-Brown)
+  efectos_aleatorios = c(var_u_ml / (var_u_ml + var_e_ml),
+                         var_u_ml / (var_u_ml + var_e_ml / 2)),
+
+  # SEM:
+  #  - una medición: R2 del indicador (proporción de su varianza que explica el factor)
+  #  - promedio de 2: omega; obs.var = FALSE usa la varianza que predice el modelo
+  SEM                = c(lavInspect(fit, "rsquare")[["igae"]],
+                         compRelSEM(fit, obs.var = FALSE)),
+
+  # Verificación con el valor verdadero (solo posible con datos simulados):
+  # la confiabilidad es la correlación al cuadrado entre el número usado y la verdad
+  con_la_verdad      = c(cor(d$igae, d$verdadero)^2,
+                         cor(d$promedio, d$verdadero)^2)
+)
+```
+
+La última columna verifica con el valor verdadero: la confiabilidad es la correlación al cuadrado entre el número usado y la verdad.
+
+## 5.3 La mejor estimación de cada trimestre
+
+El modelo también predice el crecimiento verdadero de cada trimestre (BLUP o puntaje factorial). No es el promedio simple: es el promedio "encogido" hacia la media, según su confiabilidad. Si el promedio indica un crecimiento muy alto, parte de esa distancia probablemente es error.
+
+```{r blup}
+d$blup <- fixef(m_ml) + ranef(m_ml)$trimestre[d$trimestre, 1]
+```
+
+Sobre el código:
+
+- `fixef(m_ml)` es el promedio general (2.28).
+- `ranef(m_ml)` da, para cada trimestre, su desviación respecto a ese promedio, ya corregida por la confiabilidad.
+- La suma es la mejor estimación del crecimiento de cada trimestre.
+
+¿Cuál se acerca más al crecimiento verdadero? Lo medimos con la raíz del error cuadrático medio (RMSE):
+
+```{r rmse}
+rmse <- function(x) sqrt(mean((x - d$verdadero)^2))
+c(solo_igae = rmse(d$igae), promedio = rmse(d$promedio), blup = rmse(d$blup))
+```
+
+El RMSE es la distancia típica entre cada estimación y el crecimiento verdadero, en puntos porcentuales:
+
+- Usando solo el IGAE, el error típico es de 1.49 puntos.
+- Promediando IGAE y PIB, baja a 1.13.
+- Con el BLUP, baja a 1.08.
+
+El BLUP no acierta mejor en todos los trimestres. En el tercer trimestre de 2011, el crecimiento verdadero fue realmente alto (8.48) y el promedio (8.50) estaba casi exacto, así que corregirlo hacia abajo (7.69) empeoró la estimación:
+
+```{r blup-2011}
+d[d$trimestre == "2011T3", c("trimestre", "igae", "pib", "promedio", "blup", "verdadero")]
+```
+
+Pero en promedio el BLUP se equivoca menos, y eso es lo que mide el RMSE.
+
+Esta es, en versión simple, la idea detrás del **GDPplus** de la Reserva Federal de Filadelfia, que combina dos mediciones del PIB de Estados Unidos para estimar el crecimiento verdadero.
+
+# 5. ¿Por qué importa? La ley de Okun
+
+La ley de Okun relaciona el crecimiento con el desempleo: cuando la economía crece por encima de su tendencia, el desempleo baja. En la simulación, el coeficiente verdadero es −0.3: un punto más de crecimiento reduce el desempleo en 0.3 puntos.
+
+Si el crecimiento tiene error y lo usamos como **predictor**, el coeficiente se atenúa (se acerca a 0) en proporción a su confiabilidad: $\hat{\beta} \approx \rho \times \beta$.
+
+```{r okun}
+# Coeficiente e intervalo de confianza al 95% de una regresión simple
+b_ic <- function(x) {
+  m <- lm(d$desempleo ~ x)
+  c(coef(m)[2], confint(m)[2, ])
+}
+
+sem_okun <- sem(paste(mod, "\n desempleo ~ A"), data = d)
+pe_okun  <- subset(parameterEstimates(sem_okun), op == "~")
+
+okun <- data.frame(
+  crecimiento_usado = c("Verdadero", "Solo IGAE", "Promedio IGAE y PIB", "SEM (factor A)"),
+  rbind(b_ic(d$verdadero), b_ic(d$igae), b_ic(d$promedio),
+        c(pe_okun$est, pe_okun$ci.lower, pe_okun$ci.upper)))
+names(okun)[2:4] <- c("coeficiente", "ic_inferior", "ic_superior")
+okun[, 2:4] <- round(okun[, 2:4], 3)
+okun
+```
+
+```{r okun-plot, fig.height=3.5}
+y_pos <- 4:1
+par(mar = c(4, 10, 1, 1))                  # margen izquierdo amplio para las etiquetas
+plot(okun$coeficiente, y_pos, pch = 16, xlim = range(okun[, 3:4], -0.3),
+     yaxt = "n", ylab = "", xlab = "Coeficiente de Okun (IC 95%)")
+segments(okun$ic_inferior, y_pos, okun$ic_superior, y_pos)
+axis(2, at = y_pos, labels = okun$crecimiento_usado, las = 1, cex.axis = .8)
+abline(v = -0.3, lty = 2, col = "red")
+```
+
+La línea roja es el coeficiente de la simulación (−0.3).
+
+**Lectura:**
+
+- Con el IGAE solo, la economía parece menos sensible de lo que es: el desempleo responde menos al crecimiento medido que al crecimiento verdadero.
+- Promediar IGAE y PIB ayuda, pero no elimina la atenuación.
+- El modelo SEM usa la actividad verdadera (el factor $A$) y recupera el coeficiente.
+- **Los intervalos:** los del IGAE y del promedio ni siquiera incluyen el valor verdadero (−0.3). Están centrados en un valor equivocado. La atenuación es un **sesgo**, no ruido: con más trimestres los intervalos se harían más angostos, pero alrededor del valor atenuado. Más datos no corrigen el error de medición.
+- El intervalo del SEM es más ancho que el de la regresión con el IGAE. Es el costo de reconocer la incertidumbre que agrega el error de medición: un intervalo angosto pero sesgado da una falsa sensación de precisión.
+
+# 7. Para discutir
+
+1. Si usáramos las series **revisadas** del IGAE y del PIB, que INEGI concilia para que coincidan, ¿qué correlación esperarías? ¿Significaría eso que no hay error?
+2. Otra forma de medir el error sería tomar el PIB **revisado** como si fuera la verdad y calcular el error del IGAE preliminar como la diferencia. ¿Qué supone ese enfoque sobre el PIB revisado?
+3. ¿Qué pasaría con la confiabilidad si el PIB fuera más preciso que el IGAE? ¿Qué supuesto del modelo dejaría de cumplirse?
+
+# 8. Resumen
+
+1. Dos mediciones con error de la misma variable permiten separar varianza verdadera y error.
+2. Con errores independientes y del mismo tamaño, la correlación entre ambas mediciones es su confiabilidad (test-retest).
+3. El modelo de efectos aleatorios y el SEM con dos indicadores paralelos estiman lo mismo. Con dos indicadores, el ajuste solo prueba que medias y varianzas sean iguales; no puede detectar errores correlacionados.
+4. El ICC es la confiabilidad de una medición; omega, la del promedio de las dos.
+5. Con la varianza del error se pueden construir intervalos para el crecimiento verdadero de cada trimestre; combinar IGAE y PIB los hace más angostos.
+6. El error en el crecimiento atenúa el coeficiente de Okun; modelar la actividad verdadera como variable latente lo corrige.
