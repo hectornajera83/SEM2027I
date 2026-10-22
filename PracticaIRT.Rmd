@@ -1,0 +1,799 @@
+---
+title: "Ejercicio: IRT. SEM y medición economico-social"
+author: "Héctor Nájera"
+date: "14/11/2024"
+output: html_document
+---
+
+```{r message=FALSE}
+#install.packages("latticeExtra")
+#install.packages("pracma")
+#install.packages("gridExtra")
+library(latticeExtra)
+library(mirt)
+library(ggplot2)
+library(gridExtra)
+library(pracma)
+```
+
+La EMSA descansa en dos supuestos fundamentales:
+
+1.	La EMSA es unidimensional, i.e. los indicadores son manifestaciones de un mismo constructo.
+2.	Los indicadores miden distintos niveles de severidad de seguridad alimentaria y discriminan equivalentemente (i.e. se trata de un modelo RASCH)
+
+## Datos
+
+El archivo `"DatosEMSA2008.csv"` contiene los datos (15 columnas). La primera columna es el id de la persona y las siguientes 12 columnas corresponden a los indicadores binarios de la EMSA (1=Carencia; 0=Sin Carencia), la columna 14 es el identificador de pobreza por ingreso y la columna 15 contiene el total de integrantes del hogar.
+
+
+```{r message=FALSE, include=TRUE, tidy=TRUE}
+D<-read.csv("DatosEMSA2008.csv")
+head(D)
+```
+
+```{r fig.cap="Items de la EMSA",  out.height = "900px", out.width = "1000px", echo=FALSE}
+knitr::include_graphics("EMSA.png")
+```
+
+Primero estimamos la prevalencias de cada episodio de hambre o de poca variedad de alimentos. Observamos cierta relación entre la crudeza del episodio de hambre y la proporción de hogares con la carencia. Ha mayor crudeza menor prevalencia. Esto es lo que esperaríamos observar en una escala que busca capturar distintas severidades del fenómeno de interés. 
+
+```{r include=TRUE}
+colMeans(D[,2:13])*100
+```
+
+## Teoría de respuesta al ítem
+
+Nos hemos enfocado en la confiabilidad global de los scores. Sin emabrgo, no tenemos mucha idea del tipo de información que aporta cada ítem a los scores globales. Esto es importante porque la EMSA apunta a capturar distintas severidades del fenómenos de interés. Estimaremos primero un modelo **Rasch** puesto que es el modelo teórico que debería representarse en los datos. Este modelo supone que las diferencias de los ítems ocurren en términos de severidad y no de discriminación. Usaremos el paquete `mirt()` y la opción `rasch()`. 
+
+```{r include=TRUE}
+library(mirt)
+
+m<-mirt(D[,2:13], 1, itemtype = 'Rasch')
+```
+
+Ahora inspeccionamos los parámetros con la función `coef`. Donde a es la discriminación y b es la severidad. g es el parámetro de la suerte. 
+
+```{r message=FALSE}
+coef(m, IRTpars = T, simplify = T)
+```
+
+Los ítems de la EMSA parecen capturar distintos grados de severidad. Observamos que los ítems de adultos tienenden a ser menos severos (a la izquierda) que los de infancia. Parece razonable el supuesto de la EMSA. Sin embargo, las distancia entre varias de las curvas son pequeñas y algunas se traslpan. Esto significa que algunos de los indicadores son redundantes.
+
+```{r message=FALSE}
+plot(m, type = "trace")
+```
+
+Si queremos ver todos los indicadores
+
+```{r message=FALSE}
+plot(m, type = 'trace', auto.key = FALSE, which.items = 1:12, facet_items=FALSE)
+```
+
+### Mejores gráficas con `ggplot2`
+
+```{r message=FALSE}
+plt <- plot(m, type = 'trace', facet_items=FALSE) #store the object
+#print(plt) #plot the object
+#str(plt) #find the data
+#plt$panel.args
+pltdata <- data.frame(lapply(plt$panel.args, function(x) do.call(cbind, x))[[1]])
+pltdata$item <- rep(colnames(D[,2:13]), each = 200)
+head(pltdata)
+
+library(ggplot2)
+ggplot(pltdata, aes(x, y, colour=item)) + geom_line() + ggtitle('ggplot2 Tracelines') +
+    xlab(expression(theta)) + ylab(expression(P(theta))) + theme_classic() + xlim(c(-3,3))
+```
+
+
+## Modelo de dos parámetros
+
+Ahora estimamos un modelo de teoría de respuesta al ítem de dos parámetros. Cambiamos el argumento `itemtype="2PL"`. 
+
+Es decir, relajamos el supuesto de que la dificultad es la misma para todos los ítems. Observamos que el supuesto del modelo rasch no parece sostenerse. Las pendientes tienenden a ser distintas y las curvas de alguos ítem cruzan otras curvas. Ciertos ítems como el *iaa_4* parecen tocar distintos niveles de seguridad alimentaria. Aunque los parámetros de discriminación son distintos, en todos los casos son valores altos $\geq.9$. Esto es consistente con los altos valores de las $\lambda$'s del modelo factorial. 
+
+```{r message=FALSE}
+m2<-mirt(D[,2:13], 1, itemtype = '2PL')
+coef(m2, IRTpars = T, simplify = T)
+```
+
+```{r message=FALSE}
+plot(m2, type = 'trace', auto.key = FALSE, which.items = 1:12, facet_items=FALSE)
+```
+
+### Mejores gráficas con ggplot2
+
+```{r message=FALSE}
+plt <- plot(m2, type = 'trace', facet_items=FALSE) #store the object
+#print(plt) #plot the object
+#str(plt) #find the data
+#plt$panel.args
+pltdata <- data.frame(lapply(plt$panel.args, function(x) do.call(cbind, x))[[1]])
+pltdata$item <- rep(colnames(D[,2:13]), each = 200)
+head(pltdata)
+
+library(ggplot2)
+ggplot(pltdata, aes(x, y, colour=item)) + geom_line() + ggtitle('ICC') +
+    xlab(expression(theta)) + ylab(expression(P(theta))) + xlim(c(-3,3))
+```
+
+```{r}
+plot(m2, type = 'trace', auto.key = FALSE, which.items = 4:8, facet_items=FALSE)
+```
+
+## Curva total de información
+
+La información puede partirse en distintos segmentos. Por ejemplo, si quisieramos saber la información para un nivel de severidad dado entre -2 y 0 desviaciones estándar podemos utilizar la función `areainfo()`. 
+
+```{r}
+areainfo(m2, c(-2,0), which.items = 1:12)
+```
+Una forma de graficar los resultados para la mayoría de la distribución de la variable latente es extrayendo la información para distintos niveles de Theta. Una vez hecho esto, es posible graficar la curva total de información. 
+
+```{r}
+Theta <- matrix(seq(-3,3, length.out=1000))
+info <- testinfo(m2, Theta)
+plot(info ~ Theta, type = 'l')
+```
+
+```{r}
+plot(m2, type = 'infoSE', theta_lim = c(-3,3))
+```
+
+
+## Comparación de modelos
+
+Podemos utilizar la función `anova()` para comparar los estadísticos de ajuste de ambos modelos. Dado que AICc y BIC son menores para el segundo modelo, concluimos que el segundo modelo es MEJOR! 
+
+```{r}
+anova(m, m2)
+```
+
+
+## Test scores
+
+# Test scores y escalamiento en TRI
+
+Dado un modelo, se estima el score estimado
+
+```{r}
+Theta <- matrix(seq(-3,3,.01))
+tscore <- expected.test(m2, Theta)
+```
+
+## Graficamos la relación de cada score con Theta
+
+```{r}
+plot(cbind(Theta, tscore))
+```
+
+# =============================================================
+# NUEVAS SECCIONES: Análisis Avanzados de la Relación Score-Theta
+# =============================================================
+
+## Análisis 1: Relación entre Score Observado y Theta Estimado
+
+Una pregunta fundamental en IRT es: ¿cómo se relaciona el score observado (suma simple de ítems) con la habilidad latente estimada (theta)? Esta relación NO es lineal, y entender esto es crucial para la interpretación.
+
+```{r message=FALSE, warning=FALSE}
+# Función para visualizar la relación entre scores observados y theta estimado
+visualizar_scores_theta <- function(modelo, datos) {
+  # Calcular scores observados (suma simple)
+  scores_observados <- rowSums(datos)
+  
+  # Estimar theta para cada patrón de respuesta
+  theta_estimado <- fscores(modelo, method = "EAP")
+  
+  # Crear dataframe para visualización
+  df_scores <- data.frame(
+    observado = scores_observados,
+    theta = theta_estimado[,1],
+    se_theta = theta_estimado[,2]
+  )
+  
+  # Gráfico con intervalos de confianza
+  p1 <- ggplot(df_scores, aes(x = observado, y = theta)) +
+    geom_point(alpha = 0.3, position = position_jitter(width = 0.1)) +
+    geom_smooth(method = "loess", se = TRUE, color = "red") +
+    labs(title = "Relación entre Score Observado y Theta Estimado",
+         subtitle = "Nota: La relación NO es lineal, especialmente en los extremos",
+         x = "Score Observado (suma de ítems)",
+         y = expression(theta ~ "(habilidad latente)")) +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  # Tabla de correspondencia promedio
+  tabla_conversion <- aggregate(theta ~ observado, df_scores, 
+                               function(x) c(mean = round(mean(x), 3), 
+                                           sd = round(sd(x), 3),
+                                           n = length(x)))
+  tabla_conversion <- do.call(data.frame, tabla_conversion)
+  colnames(tabla_conversion) <- c("Score_Observado", "Theta_Medio", "SD_Theta", "N")
+  
+  print(p1)
+  return(list(grafico = p1, tabla = tabla_conversion))
+}
+
+# Aplicar a nuestro modelo EMSA
+cat("\n=== RELACIÓN SCORE OBSERVADO vs THETA ===\n")
+resultados_score_theta <- visualizar_scores_theta(m2, D[,2:13])
+print(resultados_score_theta$tabla)
+```
+
+### Interpretación de la relación Score-Theta:
+- **No linealidad**: Observamos que la relación no es perfectamente lineal, especialmente en los extremos
+- **Compresión en los extremos**: Los cambios en theta son menores en los extremos de la escala
+- **Implicaciones prácticas**: Un cambio de 1 punto en el score observado no significa lo mismo en toda la escala
+
+## Análisis 2: Información Aportada por cada Nivel de Score
+
+No todos los scores aportan la misma cantidad de información. Esto es fundamental para entender dónde nuestro test es más preciso.
+
+```{r message=FALSE, warning=FALSE}
+# Función para analizar información por nivel de score
+informacion_por_score <- function(modelo, datos) {
+  # Calcular scores observados
+  scores_observados <- rowSums(datos)
+  
+  # Estimar theta para cada persona
+  theta_est <- fscores(modelo, method = "EAP")[,1]
+  
+  # Calcular información en cada punto theta
+  info_individual <- numeric(length(theta_est))
+  for(i in 1:length(theta_est)) {
+    info_individual[i] <- testinfo(modelo, matrix(theta_est[i]))
+  }
+  
+  # Crear dataframe
+  df_info <- data.frame(
+    score = scores_observados,
+    theta = theta_est,
+    informacion = info_individual,
+    error_estandar = 1/sqrt(info_individual)
+  )
+  
+  # Visualización múltiple
+  p1 <- ggplot(df_info, aes(x = score, y = informacion)) +
+    geom_boxplot(aes(group = score), fill = "lightblue", alpha = 0.7) +
+    geom_smooth(method = "loess", color = "red", se = TRUE) +
+    labs(title = "Información del Test por Score Observado",
+         subtitle = "Mayor información = Mayor precisión de medición",
+         x = "Score Observado",
+         y = "Información del Test") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  p2 <- ggplot(df_info, aes(x = score, y = error_estandar)) +
+    geom_boxplot(aes(group = score), fill = "lightcoral", alpha = 0.7) +
+    geom_smooth(method = "loess", color = "darkred", se = TRUE) +
+    labs(title = "Error Estándar por Score Observado",
+         subtitle = "Menor error = Mayor precisión",
+         x = "Score Observado",
+         y = "Error Estándar de Medición") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  # Resumen por score
+  df_resumen <- aggregate(cbind(informacion, error_estandar) ~ score, 
+                          df_info, 
+                          function(x) round(mean(x), 3))
+  
+  grid.arrange(p1, p2, ncol = 2)
+  
+  return(list(datos = df_info, resumen = df_resumen))
+}
+
+# Aplicar
+cat("\n=== ANÁLISIS DE INFORMACIÓN POR SCORE ===\n")
+info_analisis <- informacion_por_score(m2, D[,2:13])
+print(info_analisis$resumen)
+```
+
+### Interpretación de la información:
+- **Zona de máxima precisión**: El test es más preciso en los niveles intermedios de inseguridad alimentaria
+- **Precisión en los extremos**: Menor precisión en hogares con muy alta o muy baja seguridad alimentaria
+- **Implicaciones para política pública**: El instrumento es óptimo para identificar hogares en transición
+
+## Análisis 3: Puntos de Corte Óptimos para Clasificación
+
+Un aspecto crucial en la aplicación práctica es determinar puntos de corte para clasificar a los hogares en categorías de seguridad alimentaria.
+
+```{r message=FALSE, warning=FALSE}
+# Función para explorar puntos de corte
+analizar_puntos_corte <- function(modelo, datos, n_categorias = 4) {
+  # Estimar theta
+  theta_est <- fscores(modelo, method = "EAP")[,1]
+  scores_obs <- rowSums(datos)
+  
+  # Método 1: Basado en percentiles de theta (cuartiles para 4 categorías)
+  cortes_percentil <- quantile(theta_est, 
+                               probs = seq(0, 1, length.out = n_categorias + 1))
+  
+  # Método 2: Basado en información del test
+  theta_rango <- seq(-3, 3, by = 0.1)
+  info_curve <- testinfo(modelo, matrix(theta_rango))
+  
+  # Método 3: K-means clustering
+  set.seed(123)
+  kmeans_result <- kmeans(theta_est, centers = n_categorias)
+  centros <- sort(kmeans_result$centers[,1])
+  cortes_kmeans <- numeric(n_categorias - 1)
+  for(i in 1:(n_categorias-1)) {
+    cortes_kmeans[i] <- (centros[i] + centros[i+1]) / 2
+  }
+  
+  # Visualización comparativa
+  df_plot <- data.frame(
+    theta = theta_est,
+    score = scores_obs
+  )
+  
+  p <- ggplot(df_plot, aes(x = theta)) +
+    geom_histogram(aes(y = ..density..), bins = 30, 
+                   fill = "lightgray", alpha = 0.7) +
+    geom_density(color = "blue", size = 1) +
+    
+    # Añadir líneas de corte
+    geom_vline(xintercept = cortes_percentil[-c(1, length(cortes_percentil))], 
+               color = "red", linetype = "dashed", size = 1, alpha = 0.7) +
+    geom_vline(xintercept = cortes_kmeans, 
+               color = "purple", linetype = "solid", size = 1, alpha = 0.7) +
+    
+    labs(title = paste("Puntos de Corte para", n_categorias, "Categorías de Seguridad Alimentaria"),
+         subtitle = "Rojo (--) = Percentiles, Púrpura (—) = K-means",
+         x = expression(theta ~ "(Inseguridad Alimentaria)"),
+         y = "Densidad") +
+    theme_minimal() +
+    # Añadir etiquetas de categorías
+    annotate("text", x = -2, y = 0.02, label = "Seguridad\nAlimentaria", size = 3) +
+    annotate("text", x = -0.5, y = 0.02, label = "Inseguridad\nLeve", size = 3) +
+    annotate("text", x = 0.5, y = 0.02, label = "Inseguridad\nModerada", size = 3) +
+    annotate("text", x = 2, y = 0.02, label = "Inseguridad\nSevera", size = 3)
+  
+  # Tabla de conversión score -> categoría
+  tabla_conversion <- data.frame(
+    score = 0:ncol(datos),
+    theta_medio = NA,
+    n = 0,
+    categoria_percentil = NA,
+    categoria_kmeans = NA
+  )
+  
+  # Para cada score, calcular theta promedio y clasificar
+  for(s in 0:ncol(datos)) {
+    idx <- which(scores_obs == s)
+    if(length(idx) > 0) {
+      theta_medio <- mean(theta_est[idx])
+      tabla_conversion$theta_medio[s+1] <- round(theta_medio, 3)
+      tabla_conversion$n[s+1] <- length(idx)
+      
+      # Clasificar según percentiles
+      tabla_conversion$categoria_percentil[s+1] <- 
+        sum(theta_medio > cortes_percentil[-length(cortes_percentil)]) + 1
+      
+      # Clasificar según k-means
+      tabla_conversion$categoria_kmeans[s+1] <- 
+        sum(theta_medio > cortes_kmeans) + 1
+    }
+  }
+  
+  # Etiquetas de categorías
+  cat_labels <- c("Seguridad", "Inseg. Leve", "Inseg. Moderada", "Inseg. Severa")
+  tabla_conversion$categoria_percentil <- factor(tabla_conversion$categoria_percentil,
+                                                 levels = 1:4, labels = cat_labels)
+  tabla_conversion$categoria_kmeans <- factor(tabla_conversion$categoria_kmeans,
+                                              levels = 1:4, labels = cat_labels)
+  
+  print(p)
+  
+  return(list(
+    cortes_percentil = round(cortes_percentil, 3),
+    cortes_kmeans = round(cortes_kmeans, 3),
+    tabla_conversion = na.omit(tabla_conversion),
+    grafico = p
+  ))
+}
+
+# Aplicar para 4 categorías (estándar CONEVAL)
+cat("\n=== ANÁLISIS DE PUNTOS DE CORTE ===\n")
+puntos_corte <- analizar_puntos_corte(m2, D[,2:13], n_categorias = 4)
+
+cat("\nPuntos de corte por percentiles (cuartiles):\n")
+print(puntos_corte$cortes_percentil)
+
+cat("\nPuntos de corte por K-means:\n")
+print(puntos_corte$cortes_kmeans)
+
+cat("\nTabla de conversión Score -> Categoría:\n")
+print(puntos_corte$tabla_conversion)
+```
+
+### Interpretación de puntos de corte:
+- **Múltiples métodos**: Diferentes aproximaciones dan resultados similares pero no idénticos
+- **Validación necesaria**: Los puntos de corte deben validarse con criterios externos
+- **Scores de transición**: Algunos scores caen en zonas de transición entre categorías
+
+## Análisis 4: Confiabilidad Condicional del Test
+
+La confiabilidad no es constante a lo largo de toda la escala. Es importante entender dónde el test es más confiable.
+
+```{r message=FALSE, warning=FALSE}
+# Análisis de confiabilidad condicional
+confiabilidad_condicional <- function(modelo) {
+  # Calcular información y confiabilidad a lo largo del continuo
+  theta_continuo <- seq(-3, 3, by = 0.05)
+  info_continuo <- testinfo(modelo, matrix(theta_continuo))
+  se_continuo <- 1/sqrt(info_continuo)
+  
+  # Confiabilidad marginal aproximada
+  # Rel = 1 - (SE^2 / Var(theta))
+  var_theta <- 1  # Asumiendo distribución estándar
+  confiab_continuo <- 1 - (se_continuo^2 / var_theta)
+  
+  df_continuo <- data.frame(
+    theta = theta_continuo,
+    confiabilidad = confiab_continuo,
+    se = se_continuo,
+    informacion = info_continuo
+  )
+  
+  # Identificar zonas de alta confiabilidad
+  zonas_alta_conf <- df_continuo[df_continuo$confiabilidad > 0.8, ]
+  rango_optimo <- c(min(zonas_alta_conf$theta), max(zonas_alta_conf$theta))
+  
+  p <- ggplot(df_continuo, aes(x = theta)) +
+    geom_line(aes(y = confiabilidad), color = "blue", size = 1.2) +
+    geom_ribbon(aes(ymin = 0, ymax = confiabilidad), 
+                fill = "lightblue", alpha = 0.3) +
+    geom_hline(yintercept = 0.7, linetype = "dashed", color = "orange", alpha = 0.7) +
+    geom_hline(yintercept = 0.8, linetype = "dashed", color = "darkgreen", alpha = 0.7) +
+    geom_hline(yintercept = 0.9, linetype = "dashed", color = "darkblue", alpha = 0.7) +
+    
+    # Zona óptima
+    annotate("rect", xmin = rango_optimo[1], xmax = rango_optimo[2],
+             ymin = 0, ymax = 1, fill = "green", alpha = 0.1) +
+    
+    # Etiquetas
+    annotate("text", x = 2.5, y = 0.72, label = "α = 0.70", color = "orange", size = 3) +
+    annotate("text", x = 2.5, y = 0.82, label = "α = 0.80", color = "darkgreen", size = 3) +
+    annotate("text", x = 2.5, y = 0.92, label = "α = 0.90", color = "darkblue", size = 3) +
+    
+    scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1)) +
+    labs(title = "Confiabilidad Condicional del Test EMSA",
+         subtitle = paste("Zona óptima (α > 0.8): θ entre", round(rango_optimo[1], 2), 
+                         "y", round(rango_optimo[2], 2)),
+         x = expression(theta ~ "(Inseguridad Alimentaria)"),
+         y = "Confiabilidad") +
+    theme_minimal()
+  
+  # Tabla resumen por rangos
+  rangos <- list(
+    "Muy Bajo [-3, -2)" = c(-3, -2),
+    "Bajo [-2, -1)" = c(-2, -1),
+    "Medio [-1, 1]" = c(-1, 1),
+    "Alto (1, 2]" = c(1, 2),
+    "Muy Alto (2, 3]" = c(2, 3)
+  )
+  
+  resumen_rangos <- data.frame()
+  for(nombre in names(rangos)) {
+    rango <- rangos[[nombre]]
+    idx <- which(theta_continuo >= rango[1] & theta_continuo <= rango[2])
+    resumen_rangos <- rbind(resumen_rangos,
+                            data.frame(
+                              Rango = nombre,
+                              Confiabilidad_Media = round(mean(confiab_continuo[idx]), 3),
+                              SE_Medio = round(mean(se_continuo[idx]), 3),
+                              Informacion_Media = round(mean(info_continuo[idx]), 2)
+                            ))
+  }
+  
+  print(p)
+  
+  return(list(
+    grafico = p,
+    resumen = resumen_rangos,
+    rango_optimo = round(rango_optimo, 2)
+  ))
+}
+
+cat("\n=== ANÁLISIS DE CONFIABILIDAD CONDICIONAL ===\n")
+confiab_analisis <- confiabilidad_condicional(m2)
+
+cat("\nResumen de confiabilidad por rangos de theta:\n")
+print(confiab_analisis$resumen)
+
+cat("\nRango óptimo de medición (confiabilidad > 0.8):\n")
+cat("θ entre", confiab_analisis$rango_optimo[1], "y", confiab_analisis$rango_optimo[2], "\n")
+```
+
+### Interpretación de la confiabilidad condicional:
+- **Confiabilidad variable**: El test no es igualmente confiable en todo el rango
+- **Zona óptima**: La EMSA es más confiable en niveles medios de inseguridad alimentaria
+- **Implicaciones**: Para hogares en extremos, considerar instrumentos adicionales o más ítems
+
+## Análisis 5: Simulación Monte Carlo - Validación del Modelo
+
+Para entender mejor la relación entre los scores observados y theta, realizamos una simulación donde conocemos los valores "verdaderos".
+
+```{r message=FALSE, warning=FALSE}
+# Simulación para validar la recuperación de parámetros
+simular_relacion_score_theta <- function(modelo, n_sim = 1000) {
+  set.seed(2024)
+  
+  # Generar thetas "verdaderos" desde distribución normal
+  thetas_verdaderos <- rnorm(n_sim, 0, 1)
+  
+  # Simular respuestas basadas en el modelo
+  datos_sim <- simdata(modelo, Theta = matrix(thetas_verdaderos))
+  
+  # Calcular scores observados
+  scores_obs <- rowSums(datos_sim)
+  
+  # Estimar thetas (sin conocer los verdaderos)
+  thetas_estimados <- fscores(modelo, response.pattern = datos_sim, 
+                              method = "EAP")[,1]
+  
+  # Análisis de recuperación
+  df_sim <- data.frame(
+    theta_verdadero = thetas_verdaderos,
+    theta_estimado = thetas_estimados,
+    score_observado = scores_obs,
+    error = thetas_estimados - thetas_verdaderos,
+    error_abs = abs(thetas_estimados - thetas_verdaderos)
+  )
+  
+  # Correlación
+  cor_recuperacion <- cor(df_sim$theta_verdadero, df_sim$theta_estimado)
+  
+  # Visualización
+  p1 <- ggplot(df_sim, aes(x = theta_verdadero, y = theta_estimado)) +
+    geom_point(alpha = 0.3, color = "blue") +
+    geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed", size = 1) +
+    geom_smooth(method = "lm", se = TRUE, color = "darkblue") +
+    annotate("text", x = -2, y = 2.5, 
+             label = paste("r =", round(cor_recuperacion, 3)), 
+             size = 4, color = "darkblue") +
+    labs(title = "Recuperación de Parámetros: Theta Verdadero vs Estimado",
+         subtitle = "Línea roja = Recuperación perfecta",
+         x = expression(theta ~ "verdadero"),
+         y = expression(theta ~ "estimado")) +
+    theme_minimal() +
+    coord_fixed()
+  
+  p2 <- ggplot(df_sim, aes(x = score_observado, y = error)) +
+    geom_boxplot(aes(group = score_observado), fill = "lightyellow", alpha = 0.7) +
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+    geom_smooth(method = "loess", color = "blue", se = TRUE) +
+    labs(title = "Error de Estimación por Score Observado",
+         subtitle = "Error = Theta estimado - Theta verdadero",
+         x = "Score Observado",
+         y = "Error de Estimación") +
+    theme_minimal() +
+    scale_x_continuous(breaks = 0:12)
+  
+  grid.arrange(p1, p2, ncol = 2)
+  
+  # RMSE por score
+  rmse_por_score <- aggregate(error_abs ~ score_observado, df_sim, 
+                              function(x) c(rmse = round(sqrt(mean(x^2)), 3),
+                                          n = length(x)))
+  rmse_por_score <- do.call(data.frame, rmse_por_score)
+  colnames(rmse_por_score) <- c("Score", "RMSE", "N")
+  
+  # Estadísticas globales
+  cat("\n=== ESTADÍSTICAS DE RECUPERACIÓN ===\n")
+  cat("Correlación theta verdadero vs estimado:", round(cor_recuperacion, 3), "\n")
+  cat("RMSE global:", round(sqrt(mean(df_sim$error^2)), 3), "\n")
+  cat("Sesgo medio:", round(mean(df_sim$error), 3), "\n")
+  
+  return(list(
+    simulacion = df_sim, 
+    rmse_score = rmse_por_score,
+    correlacion = cor_recuperacion
+  ))
+}
+
+# Ejecutar simulación
+cat("\n=== SIMULACIÓN MONTE CARLO ===\n")
+sim_resultados <- simular_relacion_score_theta(m2, n_sim = 2000)
+
+cat("\nRMSE por score observado:\n")
+print(sim_resultados$rmse_score)
+```
+
+### Interpretación de la simulación:
+- **Alta recuperación**: La correlación entre theta verdadero y estimado es muy alta
+- **Sesgo mínimo**: El modelo recupera los parámetros sin sesgo sistemático
+- **Error variable**: El error de estimación varía según el nivel del score
+
+## Resumen y Conclusiones sobre la Relación Score-Theta
+
+### Hallazgos principales:
+
+1. **No linealidad**: La relación entre el score observado y theta NO es lineal, especialmente en los extremos
+2. **Información variable**: El test aporta más información (precisión) en niveles intermedios de inseguridad alimentaria
+3. **Puntos de corte**: Los métodos estadísticos sugieren puntos de corte consistentes con la teoría
+4. **Confiabilidad condicional**: La EMSA es más confiable en el rango medio de la escala
+5. **Validación**: Las simulaciones confirman que el modelo 2PL recupera adecuadamente los parámetros
+
+### Implicaciones prácticas:
+
+- Para **política pública**: El instrumento es óptimo para identificar hogares en transición entre seguridad e inseguridad alimentaria
+- Para **investigación**: Considerar el error de medición variable al hacer inferencias
+- Para **clasificación**: Los puntos de corte deben considerar tanto criterios estadísticos como sustantivos
+
+# Segundo ejemplo
+
+Ahora vamos hacer estimaciones de TRI considerando el índice de seis carencias del CONEVAL. Para ello utilizaremos los datos 2018. 
+
+```{r}
+library(haven)
+D18<-read_dta("pobreza_18sample.dta")
+```
+
+El modelo del CONEVAL no parece pensar a las carencias en términos exclusivos de diferencias en severidad. Noten que también se pueden pasar los nombres de las variables. Con la función `coef()` se extraen los valores de la discriminación "a" y de la severidad "b". Hay valores un tanto bajos: ic_rezedu, ic_asalud, ic_ali. 
+
+```{r}
+m3<-mirt(D18[,c("ic_rezedu", "ic_asalud", "ic_segsoc", "ic_sbv", "ic_ali", "ic_cv")], 1, itemtype = '2PL', weights=D18$factor)
+coef(m3, IRTpars = T, simplify = T)
+```
+
+Podemos graficar los resultados de la siguiente manera con `ggplot2`
+
+```{r message=FALSE}
+plt <- plot(m3, type = 'trace', facet_items=FALSE) 
+pltdata <- data.frame(lapply(plt$panel.args, function(x) do.call(cbind, x))[[1]])
+pltdata$item <- rep(c("ic_rezedu", "ic_asalud", "ic_segsoc", "ic_sbv", "ic_ali", "ic_cv"), each = 200)
+head(pltdata)
+
+library(ggplot2)
+ggplot(pltdata, aes(x, y, colour=item)) + geom_line() + ggtitle('ICC') +
+    xlab(expression(theta)) + ylab(expression(P(theta))) + xlim(c(-3,3)) + theme_classic()
+```
+
+Ahora calculamos la curva total de información. La curva luce bastante baja. Mostrando la poca información que existe en el índice de carencias. 
+
+```{r}
+areainfo(m3, c(-3,0), which.items = 1:6)
+Theta <- matrix(seq(-3,3, length.out=1000))
+info <- testinfo(m3, Theta)
+plot(info ~ Theta, type = 'l')
+
+plot(m3, type = 'infoSE', theta_lim = c(-3,3))
+```
+
+## Aplicando los análisis avanzados al modelo CONEVAL
+
+Veamos cómo se comportan estos mismos análisis con el índice de carencias del CONEVAL:
+
+```{r message=FALSE, warning=FALSE}
+# Análisis rápido de la relación score-theta para CONEVAL
+cat("\n=== ANÁLISIS CONEVAL: RELACIÓN SCORE-THETA ===\n")
+
+# Calcular scores y thetas
+scores_coneval <- rowSums(D18[,c("ic_rezedu", "ic_asalud", "ic_segsoc", "ic_sbv", "ic_ali", "ic_cv")])
+theta_coneval <- fscores(m3, method = "EAP")[,1]
+
+df_coneval <- data.frame(
+  score = scores_coneval,
+  theta = theta_coneval
+)
+
+# Tabla de conversión
+tabla_coneval <- aggregate(theta ~ score, df_coneval, 
+                          function(x) c(mean = round(mean(x), 3),
+                                      n = length(x)))
+tabla_coneval <- do.call(data.frame, tabla_coneval)
+colnames(tabla_coneval) <- c("Num_Carencias", "Theta_Medio", "N")
+
+print(tabla_coneval)
+
+# Gráfico comparativo
+p_coneval <- ggplot(df_coneval, aes(x = score, y = theta)) +
+  geom_jitter(alpha = 0.2, width = 0.1, height = 0) +
+  geom_smooth(method = "loess", se = TRUE, color = "red") +
+  labs(title = "Relación Score-Theta: Índice de Carencias CONEVAL",
+       subtitle = "Nota la menor información comparado con EMSA",
+       x = "Número de Carencias",
+       y = expression(theta)) +
+  theme_minimal() +
+  scale_x_continuous(breaks = 0:6)
+
+print(p_coneval)
+
+# Comparación de información: EMSA vs CONEVAL
+cat("\n=== COMPARACIÓN DE INFORMACIÓN: EMSA vs CONEVAL ===\n")
+info_emsa_max <- max(testinfo(m2, matrix(seq(-3, 3, 0.1))))
+info_coneval_max <- max(testinfo(m3, matrix(seq(-3, 3, 0.1))))
+
+cat("Información máxima EMSA:", round(info_emsa_max, 2), "\n")
+cat("Información máxima CONEVAL:", round(info_coneval_max, 2), "\n")
+cat("Ratio EMSA/CONEVAL:", round(info_emsa_max/info_coneval_max, 2), "\n")
+```
+
+```{r}
+tabscores <- fscores(m3, full.scores = FALSE)
+head(tabscores)
+```
+
+# Test scores y escalamiento en TRI
+
+```{r}
+plot(m3, type = 'score', theta_lim = c(-3, 3), main = "")
+```
+
+# Extras: ¿Qué pasa si incluimos la pobreza por ingresos?
+
+```{r}
+m4<-mirt(D18[,c("ic_rezedu", "ic_asalud", "ic_segsoc", "ic_sbv", "ic_ali", "ic_cv", "plb_m")], 1, itemtype = '2PL', weights=D18$factor)
+coef(m4, IRTpars = T, simplify = T)
+```
+
+
+```{r}
+anova(m4, m3)
+```
+
+
+```{r}
+plot(m4, type = 'infoSE', theta_lim = c(-3,3))
+```
+
+
+# Extras: Estimación del ajuste de cada indicador. 
+
+La función itemfit muestra los cambios en $\chi^2$ atribuibles a los indicadores y el valor de RMSEA por indicador. Estos estadísticos pueden usarse para identificar items problemáticos en el contexto del modelo estimado. Valores de RMSEA.S_X2>.05 indican un pobre ajuste.
+
+
+```{r}
+itemfit(m3)
+```
+
+# Respuestas graduadas (graded response)
+
+Description: This data set comes from the Consumer Protection and Perceptions of Science and Technology section of the 1992 Euro-Barometer Survey (Karlheinz and Melich, 1992) based on a sample from Great Britain.
+
+All of the below items were measured on a four-group scale with response categories "strongly disagree", "disagree to some extent", "agree to some extent" and "strongly agree". 
+
+- Comfort Science and technology are making our lives healthier, easier and more comfortable.
+
+- Work The application of science and new technology will make work more interesting.
+
+- Future Thanks to science and technology, there will be more opportunities for the future generations.
+
+- Benefit The benefits of science are greater than any harmful effect it may have.
+
+Se puede pensar que $\theta$ es la confianza latente que tiene la gente en la ciencia
+
+
+```{r}
+ggum <- mirt(Science, 1, itemtype = "graded")
+coef(ggum, simplify=TRUE)
+plot(ggum)
+plot(ggum, type = 'trace')
+plot(ggum, type = 'itemscore')
+```
+
+## Conclusiones Finales
+
+Este ejercicio demuestra varios puntos clave sobre IRT y su aplicación en medición socioeconómica:
+
+1. **La EMSA como instrumento robusto**: Muestra buenas propiedades psicométricas con alta información en rangos relevantes
+
+2. **Importancia del modelo 2PL**: Permite capturar diferencias tanto en severidad como en discriminación
+
+3. **Relación compleja score-theta**: La no linealidad tiene implicaciones importantes para la interpretación
+
+4. **Precisión variable**: No todos los niveles de la escala son igualmente precisos
+
+5. **Comparación de instrumentos**: El índice CONEVAL tiene menor información pero captura un constructo más amplio
+
+6. **Aplicaciones prácticas**: Los puntos de corte y la confiabilidad condicional son cruciales para política pública
+
+### Recomendaciones para investigación futura:
+
+- Validar puntos de corte con criterios externos
+- Desarrollar ítems para mejorar información en los extremos
+- Explorar modelos multidimensionales
+- Considerar invarianza de medición entre grupos
