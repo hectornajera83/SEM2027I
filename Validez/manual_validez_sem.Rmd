@@ -1,0 +1,779 @@
+---
+title: "Validez de constructo con SEM: tres casos con informalidad laboral"
+subtitle: "Manual de práctica en `lavaan`"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      comment = "", fig.align = "center")
+```
+
+# Presentación {-}
+
+Este manual ilustra con datos simulados tres problemas de **validez de constructo**
+que suelen pasarse por alto cuando se pasa directamente al cálculo de índices de
+validez convergente y discriminante. Los tres usan la **informalidad laboral** como
+constructo:
+
+| Caso | Pregunta | Fuente de evidencia de validez (*Standards*, 2014) |
+|---|---|---|
+| 1 | ¿Hay otro factor que explique varianza sistemática en los indicadores? (independencia local) | Estructura interna |
+| 2 | ¿El constructo se representa mejor con una o con varias dimensiones? | Estructura interna / validez discriminante |
+| 3 | ¿El constructo predice lo que la teoría dice, **condicional** en los controles? | Relaciones con otras variables (red nomológica) |
+
+**Organización de los archivos**
+
+* `generar_datos.R`: simula todas las bases y guarda los parámetros verdaderos en `data/`.
+  Contiene el proceso generador de datos (PGD), que conviene discutir con el grupo
+  **después** de cada caso.
+* `manual_validez_sem.Rmd` (este archivo): sólo lee los datos y los analiza, como
+  haría un investigador que no conoce el PGD.
+
+```{r paquetes}
+library(lavaan)    # >= 0.6
+library(semTools)  # htmt(), AVE(), compRelSEM()
+library(knitr)
+library(semPlot)   # diagramas: install.packages("semPlot")
+
+# Diagrama de trayectorias con la solución estandarizada
+#   layout   = "tree" (vertical), "tree2" (mejor para bifactor/estructural)
+#   rotation = 1 (arriba-abajo), 2 (izquierda-derecha)
+#   bifactor = nombre del factor general (dibuja los específicos del otro lado)
+diagrama <- function(fit, titulo = "", layout = "tree", rotation = 1,
+                     bifactor = NULL, ...) {
+  semPaths(fit, what = "std", whatLabels = "std",
+           layout = layout, rotation = rotation, bifactor = bifactor,
+           style = "lisrel", residuals = TRUE, intercepts = FALSE,
+           thresholds = FALSE, nCharNodes = 0,
+           shapeMan = "rectangle", sizeMan = 11, sizeMan2 = 4, sizeLat = 8,
+           label.cex = 1, edge.label.cex = 0.9, edge.color = "black",
+           fade = FALSE, mar = c(5, 4, 6, 4), ...)
+  title(titulo, line = 2.5)
+}
+
+if (!file.exists("data/parametros_verdaderos.rds"))
+  stop("Primero ejecute: source('generar_datos.R')")
+
+verdad <- readRDS("data/parametros_verdaderos.rds")
+
+# Auxiliares para tablas
+ajuste <- function(fit, nombre = deparse(substitute(fit))) {
+  fm <- fitMeasures(fit, c("chisq", "df", "pvalue", "cfi", "tli",
+                           "rmsea", "srmr", "aic", "bic"))
+  v <- setNames(round(as.numeric(fm), 3), names(fm))
+  data.frame(modelo = nombre, as.list(v), check.names = FALSE)
+}
+cargas_std <- function(fit) {
+  ss <- standardizedSolution(fit)
+  ss <- ss[ss$op == "=~", c("lhs", "rhs", "est.std")]
+  names(ss) <- c("factor", "indicador", "carga_std")
+  ss
+}
+```
+
+> **Nota sobre los indicadores.** En encuestas de empleo (ENOE, por ejemplo) los
+> indicadores de informalidad son binarios. Para concentrarnos en la lógica,
+> el cuerpo del manual usa sus **respuestas latentes continuas** ($y^*$). El
+> [Apéndice](#apendice) repite el Caso 1 con indicadores binarios y el estimador WLSMV.
+
+---
+
+# Caso 1. Pérdida de independencia local
+
+## Idea
+
+En un modelo factorial reflexivo de un factor,
+
+$$x_j = \lambda_j\,\eta + \varepsilon_j, \qquad \operatorname{Cov}(\varepsilon_j,\varepsilon_k)=0 \;\; (j\neq k),$$
+
+lo que implica $\operatorname{Cov}(x_j, x_k) = \lambda_j \lambda_k \operatorname{Var}(\eta)$.
+Esto es la **independencia local**: *condicional en* $\eta$, los indicadores no
+covarían. Toda la covarianza sistemática entre los indicadores se debe al constructo.
+
+Si un **segundo factor**, ajeno al constructo, afecta a un subconjunto de indicadores,
+la independencia local se rompe. El problema no es sólo estadístico. El puntaje
+resultante mezcla el constructo con **varianza sistemática irrelevante para el
+constructo** (Messick), y el factor estimado puede quedar *redefinido* por los datos.
+
+**Ejemplo.** Medimos informalidad con seis indicadores. Tres de ellos (no tener
+contrato escrito, recibir el pago en efectivo, unidad económica sin registro fiscal)
+dependen también de ser **trabajador por cuenta propia**. Un trabajador
+independiente no tiene contrato con un patrón y cobra en efectivo a sus clientes,
+aunque en el sentido teórico no sea "más informal".
+
+## Los datos
+
+```{r c1-datos}
+d1 <- read.csv("data/c1_dependencia_local.csv")
+round(cor(d1), 2)
+```
+
+La matriz ya sugiere una estructura en bloques: las correlaciones dentro de
+`sin_contrato`, `pago_efec` y `sin_registro` son más altas de lo que sus
+correlaciones con los demás indicadores harían esperar.
+
+## Modelo 1: un factor (independencia local impuesta)
+
+```{r c1-m1}
+m1_uni <- '
+  INF =~ sin_ss + sin_salud + sin_prest + sin_contrato + pago_efec + sin_registro
+'
+f1_uni <- cfa(m1_uni, data = d1, std.lv = TRUE)
+kable(ajuste(f1_uni, "1 factor"))
+```
+
+```{r c1-m1-diagrama, fig.width=7, fig.height=4.5}
+diagrama(f1_uni, "M1: un factor (independencia local impuesta)")
+```
+
+El ajuste es malo (RMSEA y CFI lejos de los umbrales usuales). Lo informativo no es el
+índice global sino **dónde** está el desajuste. Los residuos de correlación
+(observada − implicada) muestran el patrón:
+
+```{r c1-residuos}
+res1 <- lavResiduals(f1_uni)$cov
+round(res1, 3)
+```
+
+* Residuos **positivos** dentro de {`sin_ss`, `sin_salud`, `sin_prest`} y dentro de
+  {`sin_contrato`, `pago_efec`, `sin_registro`}.
+* Residuos **negativos** entre bloques.
+
+Es la huella de un factor omitido. Ahora veamos los índices de modificación:
+
+```{r c1-mi}
+mi1 <- modindices(f1_uni, sort. = TRUE)
+head(mi1[, c("lhs", "op", "rhs", "mi", "sepc.all")], 6)
+```
+
+**Atención:** el índice de modificación más grande puede **no** estar en los
+indicadores contaminados sino en los "limpios" (`sin_ss ~~ sin_salud`, etc.). La
+covarianza adicional de los tres indicadores contractuales *jala* al factor hacia
+ellos. El factor queda redefinido y los indicadores de protección social quedan
+con covarianza no explicada. Liberar mecánicamente el IM más grande llevaría a una
+corrección equivocada.
+
+## Modelo 2: informalidad + factor de autoempleo
+
+```{r c1-m2}
+m1_bif <- '
+  INF  =~ sin_ss + sin_salud + sin_prest + sin_contrato + pago_efec + sin_registro
+  AUTO =~ sin_contrato + pago_efec + sin_registro
+  INF ~~ 0*AUTO          # factor ajeno, ortogonal al constructo
+'
+f1_bif <- cfa(m1_bif, data = d1, std.lv = TRUE)
+```
+
+## Modelo 3: un factor + residuos correlacionados
+
+```{r c1-m3}
+m1_res <- '
+  INF =~ sin_ss + sin_salud + sin_prest + sin_contrato + pago_efec + sin_registro
+  sin_contrato ~~ pago_efec + sin_registro
+  pago_efec    ~~ sin_registro
+'
+f1_res <- cfa(m1_res, data = d1, std.lv = TRUE)
+
+kable(rbind(ajuste(f1_uni, "M1: 1 factor"),
+            ajuste(f1_bif, "M2: INF + AUTO"),
+            ajuste(f1_res, "M3: 1 factor + resid. corr.")))
+```
+
+```{r c1-m2-m3-diagramas, fig.width=7, fig.height=5, fig.show="hold", out.width="50%"}
+diagrama(f1_bif, "M2: INF + AUTO", layout = "tree2", bifactor = "INF",
+         exoCov = FALSE)   # oculta la covarianza INF ~~ AUTO fijada en 0
+diagrama(f1_res, "M3: un factor + residuos correlacionados")
+```
+
+Los diagramas muestran la equivalencia. En M2 la covarianza extra entre
+`sin_contrato`, `pago_efec` y `sin_registro` pasa por un factor; en M3, por tres
+arcos entre sus errores.
+
+M2 y M3 son **modelos equivalentes**: tienen el mismo $\chi^2$ y los mismos grados de
+libertad. Un factor específico con tres indicadores consume exactamente los tres
+parámetros que liberan las tres covarianzas residuales. Los datos no distinguen
+entre "artefacto de método" (M3) y "segundo factor sustantivo" (M2). **Esa decisión
+es teórica**, y es precisamente una decisión sobre la validez del constructo.
+
+## Consecuencias: cargas y fiabilidad
+
+```{r c1-cargas}
+v1 <- verdad$cargas_c1
+comp <- data.frame(
+  indicador       = rownames(v1),
+  verdadera_INF   = v1[, "INF"],
+  M1_1factor      = cargas_std(f1_uni)$carga_std,
+  M2_INF          = subset(cargas_std(f1_bif), factor == "INF")$carga_std,
+  verdadera_AUTO  = v1[, "AUTO"],
+  M2_AUTO         = c(0, 0, 0, subset(cargas_std(f1_bif), factor == "AUTO")$carga_std)
+)
+kable(comp, digits = 2, row.names = FALSE)
+```
+
+En el modelo de un factor, las cargas de los indicadores contaminados se **inflan**
+(quedan iguales o mayores que las de protección social) y las de protección social se
+**atenúan**. En el proceso verdadero, los indicadores de protección social son los
+mejores indicadores de informalidad. El modelo mal especificado invierte el orden.
+
+### Error total y error sistemático por indicador
+
+Con indicadores estandarizados, la varianza de cada indicador se descompone en
+
+$$1 = \underbrace{\lambda_{INF}^2}_{\text{válida}} \;+\; \underbrace{\lambda_{AUTO}^2}_{\text{sistemática irrelevante}} \;+\; \underbrace{\theta}_{\text{aleatoria}},
+\qquad \text{error total} = 1-\lambda_{INF}^2 = \lambda_{AUTO}^2 + \theta .$$
+
+A partir de esta descomposición se definen medidas concretas por indicador:
+
+| Medida | Fórmula | Interpretación |
+|---|---|---|
+| Coeficiente de validez | $\lambda_{INF}$ | Correlación del indicador con el constructo |
+| Varianza válida | $\lambda_{INF}^2$ | Parte de la varianza que es informalidad |
+| Varianza sistemática irrelevante | $\lambda_{AUTO}^2$ | Error **sistemático**: confiable pero ajeno al constructo |
+| Varianza aleatoria | $\theta$ | Error aleatorio |
+| Fiabilidad | $\lambda_{INF}^2+\lambda_{AUTO}^2$ | Todo lo sistemático, relevante o no |
+| Error total | $1-\lambda_{INF}^2$ | Todo lo que no es constructo |
+| Proporción sistemática del error | $\lambda_{AUTO}^2/(1-\lambda_{INF}^2)$ | Qué parte del error total *no* se promedia al sumar indicadores |
+
+La brecha entre fiabilidad y varianza válida ($\lambda_{AUTO}^2$) es exactamente el
+error sistemático.
+
+```{r c1-descomposicion}
+v1     <- verdad$cargas_c1
+items1 <- rownames(v1)
+
+# Cargas estandarizadas de M2, alineadas por indicador
+cb <- cargas_std(f1_bif)
+lam_inf_m2 <- setNames(cb$carga_std[cb$factor == "INF"],
+                       cb$indicador[cb$factor == "INF"])[items1]
+lam_aut_m2 <- setNames(rep(0, length(items1)), items1)
+sel <- cb$factor == "AUTO"
+lam_aut_m2[cb$indicador[sel]] <- cb$carga_std[sel]
+
+descomponer <- function(l_inf, l_aut) {
+  data.frame(
+    indicador          = items1,
+    validez            = l_inf,
+    var_valida         = l_inf^2,
+    var_sist_irrel     = l_aut^2,
+    var_aleatoria      = 1 - l_inf^2 - l_aut^2,
+    fiabilidad         = l_inf^2 + l_aut^2,
+    error_total        = 1 - l_inf^2,
+    prop_sist_en_error = l_aut^2 / (1 - l_inf^2),
+    row.names = NULL
+  )
+}
+
+kable(descomponer(v1[, "INF"], v1[, "AUTO"]), digits = 3,
+      caption = "Proceso verdadero (sólo conocido en la simulación)")
+kable(descomponer(lam_inf_m2, lam_aut_m2), digits = 3,
+      caption = "Estimado con M2 (lo que el investigador puede calcular)")
+```
+
+M2 recupera la descomposición verdadera. En los indicadores contractuales, entre un
+tercio y la mitad del error total es **sistemático**. Su fiabilidad es similar a la
+de los indicadores de protección social, pero su validez es mucho menor.
+
+¿Qué concluiría quien estimara sólo el modelo de un factor (M1)? M1 no tiene forma de
+separar la varianza sistemática irrelevante: la reparte entre "constructo" y
+"residuo".
+
+```{r c1-sesgo-m1}
+cm1    <- cargas_std(f1_uni)
+lam_m1 <- setNames(cm1$carga_std, cm1$indicador)[items1]
+lam_v  <- v1[, "INF"]
+
+m1_vs_verdad <- data.frame(
+  indicador             = items1,
+  carga_M1              = lam_m1,
+  carga_verdadera       = lam_v,
+  sesgo                 = lam_m1 - lam_v,
+  sesgo_rel_pct         = 100 * (lam_m1 - lam_v) / lam_v,
+  rango_M1              = rank(-lam_m1),
+  rango_verdadero       = rank(-lam_v),
+  error_total_M1        = 1 - lam_m1^2,
+  error_total_verdadero = 1 - lam_v^2,
+  var_mal_clasificada   = lam_m1^2 - lam_v^2,
+  row.names = NULL
+)
+kable(m1_vs_verdad, digits = 3)
+```
+
+* `var_mal_clasificada` **> 0**: varianza sistemática irrelevante que M1 cuenta como
+  informalidad. Ocurre en los indicadores contaminados.
+* `var_mal_clasificada` **< 0**: varianza válida que M1 cuenta como error. Ocurre en
+  los indicadores de protección social, porque el factor se desplazó hacia los
+  contaminados.
+* En los indicadores contaminados, M1 subestima el error total en promedio en
+  `r round(mean((m1_vs_verdad$error_total_verdadero - m1_vs_verdad$error_total_M1)[v1[, "AUTO"] > 0]), 2)`
+  unidades de varianza estandarizada. En los de protección social lo sobreestima en
+  `r round(mean((m1_vs_verdad$error_total_M1 - m1_vs_verdad$error_total_verdadero)[v1[, "AUTO"] == 0]), 2)`.
+  Las columnas de rango muestran la inversión del orden.
+
+```{r c1-error-grafica, fig.width=11, fig.height=4.5}
+cols  <- c("#2b6cb0", "#dd6b20", "grey80")
+comps <- function(v, s, a) {
+  m <- rbind(v, s, a); colnames(m) <- items1; m[, rev(seq_along(items1))]
+}
+layout(matrix(c(1, 2, 3, 4, 4, 4), 2, byrow = TRUE), heights = c(5, 1))
+op <- par(mar = c(4, 9, 3, 1))
+barplot(comps(lam_v^2, v1[, "AUTO"]^2, 1 - lam_v^2 - v1[, "AUTO"]^2),
+        horiz = TRUE, las = 1, col = cols,
+        xlab = "Proporción de varianza", main = "Proceso verdadero")
+barplot(comps(lam_inf_m2^2, lam_aut_m2^2, 1 - lam_inf_m2^2 - lam_aut_m2^2),
+        horiz = TRUE, las = 1, col = cols,
+        xlab = "Proporción de varianza", main = "Estimado con M2")
+barplot(comps(lam_m1^2, rep(0, 6), 1 - lam_m1^2),
+        horiz = TRUE, las = 1, col = cols,
+        xlab = "Proporción de varianza", main = "Lo que concluye M1")
+par(mar = c(0, 0, 0, 0)); plot.new()
+legend("center", horiz = TRUE, bty = "n", fill = cols,
+       legend = c("Válida (informalidad)", "Error sistemático (autoempleo)",
+                  "Error aleatorio"))
+par(op); layout(1)
+```
+
+M1 no tiene una categoría para el error sistemático. Lo reparte entre la barra azul
+de los indicadores contaminados, que se alarga, y la gris.
+
+### Fiabilidad del puntaje: $\omega_t$ y $\omega_h$
+
+¿Cuánto de la varianza confiable del puntaje sumado es realmente informalidad?
+Usamos el modelo M2 para calcular $\omega$ total y $\omega$ jerárquico:
+
+$$\omega_t = \frac{(\sum\lambda_{INF})^2 + (\sum\lambda_{AUTO})^2}{\operatorname{Var}(X)}, \qquad
+\omega_h = \frac{(\sum\lambda_{INF})^2}{\operatorname{Var}(X)}$$
+
+```{r c1-omega}
+ss2   <- standardizedSolution(f1_bif)
+l_inf <- ss2$est.std[ss2$lhs == "INF"  & ss2$op == "=~"]
+l_aut <- ss2$est.std[ss2$lhs == "AUTO" & ss2$op == "=~"]
+theta <- ss2$est.std[ss2$op == "~~" & ss2$lhs == ss2$rhs & ss2$lhs %in% names(d1)]
+var_X <- sum(l_inf)^2 + sum(l_aut)^2 + sum(theta)
+
+fiab <- data.frame(
+  medida = c("alfa de Cronbach (tau-equivalente)",
+             "omega (modelo de 1 factor, M1)",
+             "omega total (M2)",
+             "omega jerárquico: sólo INF (M2)",
+             "proporción de varianza común debida a AUTO"),
+  valor = c(compRelSEM(f1_uni, tau.eq = TRUE),
+            compRelSEM(f1_uni),
+            (sum(l_inf)^2 + sum(l_aut)^2) / var_X,
+            sum(l_inf)^2 / var_X,
+            sum(l_aut)^2 / (sum(l_inf)^2 + sum(l_aut)^2))
+)
+kable(fiab, digits = 3)
+```
+
+Alfa y omega de un factor son altos y "aprobarían" la escala. Pero una parte de esa
+varianza confiable es **autoempleo**, no informalidad. **Fiabilidad no es validez:**
+la varianza sistemática irrelevante es perfectamente confiable.
+
+## Para discutir
+
+1. ¿Qué otras fuentes de varianza sistemática podrían afectar a subconjuntos de
+   indicadores de informalidad? Por ejemplo: tamaño de la empresa, sector
+   agropecuario, informante *proxy* en el hogar, módulo del cuestionario.
+2. ¿Cuándo es preferible modelar `AUTO` como factor (M2) y cuándo como
+   residuos correlacionados (M3)? ¿Cambia la interpretación del puntaje?
+3. Si `AUTO` estuviera correlacionado con `INF` (lo más realista), ¿qué problemas de
+   identificación aparecerían? ¿Qué información externa ayudaría?
+
+---
+
+# Caso 2. ¿Una dimensión o dos?
+
+## Idea
+
+Supongamos que la teoría propone dos dimensiones de la informalidad:
+
+* **PROT, protección social**: `sin_ss`, `sin_salud`, `sin_prest`
+* **LEGAL, legal-contractual**: `sin_contrato`, `pago_efec`, `sin_registro`
+
+El modelo de dos factores correlacionados **siempre** ajusta al menos tan bien como
+el de un factor, porque el modelo de un factor es un caso particular del de dos con
+$\rho_{PROT,LEGAL}=1$. Una mejora de ajuste no basta para justificar la
+multidimensionalidad. La pregunta relevante es si las dimensiones son
+**empíricamente distinguibles**, es decir, si hay evidencia de validez discriminante
+entre ellas.
+
+Analizamos dos bases:
+
+* **(a)** `c2_unidimensional.csv`: los datos provienen de *un* factor.
+* **(b)** `c2_contraste_bidimensional.csv`: hay dos factores reales y moderadamente correlacionados.
+
+```{r c2-modelos, warning=TRUE}
+m2_uni <- '
+  INF =~ sin_ss + sin_salud + sin_prest + sin_contrato + pago_efec + sin_registro
+'
+m2_bi <- '
+  PROT  =~ sin_ss + sin_salud + sin_prest
+  LEGAL =~ sin_contrato + pago_efec + sin_registro
+'
+d2a <- read.csv("data/c2_unidimensional.csv")
+d2b <- read.csv("data/c2_contraste_bidimensional.csv")
+
+f2a_uni <- cfa(m2_uni, data = d2a, std.lv = TRUE)
+f2a_bi  <- cfa(m2_bi,  data = d2a, std.lv = TRUE)
+f2b_uni <- cfa(m2_uni, data = d2b, std.lv = TRUE)
+f2b_bi  <- cfa(m2_bi,  data = d2b, std.lv = TRUE)
+```
+
+## (a) Datos unidimensionales
+
+```{r c2a-ajuste}
+kable(rbind(ajuste(f2a_uni, "1 factor"), ajuste(f2a_bi, "2 factores")))
+lavTestLRT(f2a_uni, f2a_bi)
+```
+
+```{r c2a-diagramas, fig.width=7, fig.height=5, fig.show="hold", out.width="50%"}
+diagrama(f2a_uni, "(a) Un factor")
+diagrama(f2a_bi,  "(a) Dos factores: PROT y LEGAL")
+```
+
+Fíjese en el arco entre `PROT` y `LEGAL` del segundo diagrama.
+
+Ambos modelos ajustan bien. La diferencia de $\chi^2$ (1 gl) no es significativa, y
+AIC/BIC favorecen al modelo de un factor. Veamos la correlación latente:
+
+```{r c2a-rho}
+rho_a <- subset(parameterEstimates(f2a_bi), lhs == "PROT" & rhs == "LEGAL")
+rho_a[, c("lhs", "rhs", "est", "se", "ci.lower", "ci.upper")]
+```
+
+La correlación entre "dimensiones" es prácticamente 1 y su intervalo de confianza
+incluye el 1. Si la estimación puntual rebasa 1, `lavaan` advierte que la matriz de
+covarianzas latentes **no es definida positiva** (un caso Heywood). Esa advertencia
+no es un problema técnico que haya que "arreglar": es evidencia de que los dos
+factores no se distinguen. La prueba de razón de verosimilitud de arriba es, de hecho, la prueba de
+$H_0:\rho=1$. Como $\rho=1$ está en la frontera del espacio paramétrico, la prueba es
+conservadora.
+
+**Criterios habituales de validez discriminante entre PROT y LEGAL:**
+
+```{r c2a-disc}
+htmt_a <- htmt(m2_bi, data = d2a)
+ave_a  <- AVE(f2a_bi)
+data.frame(
+  criterio = c("rho latente", "rho^2", "AVE PROT", "AVE LEGAL", "HTMT"),
+  valor    = round(c(rho_a$est, rho_a$est^2, ave_a, htmt_a["LEGAL", "PROT"]), 3),
+  regla    = c("IC no debe incluir 1 (o umbral .80-.90)",
+               "Fornell-Larcker: rho^2 < AVE de ambos",
+               "", "", "< .85 (o .90)")
+)
+```
+
+Todos los criterios coinciden: **no hay validez discriminante** entre las supuestas
+dimensiones. Reportar dos subíndices sería un caso de *jangle fallacy*: dos nombres
+para lo mismo, con el riesgo de que el análisis de política trate como distintos dos
+indicadores que no lo son.
+
+Nótese también que el AVE de LEGAL puede quedar por debajo de .50 aunque el modelo sea
+correcto. El AVE refleja la **magnitud** de las cargas, no la dimensionalidad. Ésta
+es una razón para no usarlo como criterio mecánico de validez convergente.
+
+## (b) Contraste: dos dimensiones reales
+
+```{r c2b}
+kable(rbind(ajuste(f2b_uni, "1 factor"), ajuste(f2b_bi, "2 factores")))
+lavTestLRT(f2b_uni, f2b_bi)
+rho_b <- subset(parameterEstimates(f2b_bi), lhs == "PROT" & rhs == "LEGAL")
+htmt_b <- htmt(m2_bi, data = d2b)
+```
+
+```{r c2b-diagramas, fig.width=7, fig.height=5, fig.show="hold", out.width="50%"}
+diagrama(f2b_uni, "(b) Un factor")
+diagrama(f2b_bi,  "(b) Dos factores: PROT y LEGAL")
+```
+
+Aquí el modelo de un factor se rechaza con claridad. La correlación latente es
+`r round(rho_b$est, 2)` (IC 95 %: `r round(rho_b$ci.lower, 2)`–`r round(rho_b$ci.upper, 2)`)
+y el HTMT es `r round(htmt_b["LEGAL", "PROT"], 2)`. La distinción entre dimensiones
+tiene respaldo empírico.
+
+## Resumen del Caso 2
+
+```{r c2-resumen}
+resumen2 <- data.frame(
+  base         = c("(a) unidimensional", "(b) bidimensional"),
+  rho_real     = c(1, verdad$rho_contraste),
+  rho_estimado = c(rho_a$est, rho_b$est),
+  IC_sup       = c(rho_a$ci.upper, rho_b$ci.upper),
+  HTMT         = c(htmt_a["LEGAL", "PROT"], htmt_b["LEGAL", "PROT"]),
+  p_LRT        = c(lavTestLRT(f2a_uni, f2a_bi)[2, "Pr(>Chisq)"],
+                   lavTestLRT(f2b_uni, f2b_bi)[2, "Pr(>Chisq)"]),
+  BIC_prefiere = c(ifelse(BIC(f2a_uni) < BIC(f2a_bi), "1 factor", "2 factores"),
+                   ifelse(BIC(f2b_uni) < BIC(f2b_bi), "1 factor", "2 factores"))
+)
+kable(resumen2, digits = 3)
+```
+
+## Para discutir
+
+1. Si la teoría (o la definición de la OIT) distingue conceptualmente entre
+   protección social y condición legal, ¿basta la evidencia de (a) para abandonar la
+   distinción? ¿Qué diferencia hay entre distinción *conceptual* y *empírica*?
+2. ¿Por qué el CFI/RMSEA del modelo de dos factores en (a) no es un argumento a su favor?
+3. ¿Qué pasaría con la conclusión si $N$ fuera 200 en lugar de 2000? (Sugerencia:
+   modifique `N` en `generar_datos.R` y vuelva a compilar.)
+
+---
+
+# Caso 3. Validez nomológica: predicción condicional
+
+## Idea
+
+Un constructo válido debe ocupar el lugar que la teoría le asigna en su **red
+nomológica** (Cronbach y Meehl, 1955). Para un economista, la predicción natural es
+una **penalización salarial por informalidad** en una ecuación tipo Mincer:
+
+$$\ln w_i = \beta_0 + \beta_1\,\text{educ}_i + \beta_2\,\text{exper}_i + \beta_3\,\text{exper}^2_i
++ \beta_4\,\text{mujer}_i + \beta_{INF}\,\text{INF}_i + u_i, \qquad \beta_{INF} < 0.$$
+
+El punto clave es que la predicción es **condicional**. La informalidad se concentra
+en trabajadores con menor escolaridad, de modo que cualquier variable correlacionada
+con la escolaridad "predice" salarios sin condicionar. La evidencia de validez está en
+que el constructo prediga **después** de controlar por capital humano.
+
+Con SEM estimamos la relación al nivel latente, corregida por error de medición:
+
+```
+INF =~ indicadores                 (modelo de medida)
+INF ~ educ + exper + mujer         (MIMIC: determinantes de la informalidad)
+ln_w ~ INF + educ + exper + exper2 + mujer
+```
+
+Comparamos dos escenarios:
+
+* **(a)** Los indicadores son laborales y miden informalidad.
+* **(b)** Un "índice de informalidad" se construye con indicadores del **hogar**
+  (sin acceso a salud por ninguna vía, uso de efectivo, sin cuenta bancaria,
+  sin internet, vivienda precaria, sin crédito). Estos indicadores miden algo más
+  cercano a **marginación**, muy ligado a la escolaridad.
+
+En ambos casos el salario verdadero tiene una penalización de
+`r verdad$beta_INF` log-puntos por desviación estándar de informalidad.
+
+```{r c3-datos}
+d3a <- read.csv("data/c3a_informalidad_salarios.csv")
+d3b <- read.csv("data/c3b_marginacion_salarios.csv")
+items_a <- c("sin_ss", "sin_salud", "sin_prest", "sin_contrato", "pago_efec", "sin_registro")
+items_b <- c("sin_salud_hogar", "usa_efectivo", "sin_cuenta", "sin_internet",
+             "viv_precaria", "sin_credito")
+
+modelos_c3 <- function(items) {
+  medida <- paste("F =~", paste(items, collapse = " + "))
+  list(
+    medida        = medida,
+    incondicional = paste(medida, "\n ln_w ~ F"),
+    condicional   = paste(medida, "
+      F    ~ educ + exper + mujer
+      ln_w ~ F + educ + exper + exper2 + mujer")
+  )
+}
+ma <- modelos_c3(items_a)
+mb <- modelos_c3(items_b)
+cat(ma$condicional)
+```
+
+## (a) Indicadores laborales de informalidad
+
+```{r c3a}
+f3a_med  <- cfa(ma$medida,        data = d3a)
+f3a_inc  <- sem(ma$incondicional, data = d3a)
+f3a_cond <- sem(ma$condicional,   data = d3a)
+kable(rbind(ajuste(f3a_med, "medida"), ajuste(f3a_cond, "estructural condicional")))
+```
+
+```{r c3a-diagrama, fig.width=9, fig.height=6}
+diagrama(f3a_cond, "(a) Informalidad laboral: modelo condicional",
+         layout = "tree2", rotation = 2, exoCov = FALSE)
+```
+
+El diagrama muestra la solución **completamente estandarizada** (`std.all`). Las
+tablas de abajo reportan la solución `std.lv`, con $\ln w$ en log-puntos.
+
+Efecto de una DE de la informalidad latente sobre $\ln w$ (solución `std.lv`, que
+estandariza la latente pero deja $\ln w$ en log-puntos):
+
+```{r c3a-efecto}
+efecto <- function(fit, etiqueta) {
+  s <- standardizedSolution(fit, type = "std.lv")
+  s <- s[s$lhs == "ln_w" & s$op == "~" & s$rhs == "F", ]
+  data.frame(especificacion = etiqueta, estimacion = s$est.std,
+             ic_inf = s$ci.lower, ic_sup = s$ci.upper)
+}
+# Comparación con enfoques "observados" habituales
+reg_obs <- function(d, x, etiqueta) {
+  d$z <- as.vector(scale(x))
+  m <- lm(ln_w ~ z + educ + exper + exper2 + mujer, data = d)
+  ci <- confint(m)["z", ]
+  data.frame(especificacion = etiqueta, estimacion = coef(m)["z"],
+             ic_inf = ci[1], ic_sup = ci[2], row.names = NULL)
+}
+tab3a <- rbind(
+  efecto(f3a_inc,  "SEM sin controles"),
+  efecto(f3a_cond, "SEM condicional"),
+  reg_obs(d3a, rowSums(d3a[items_a]), "MCO condicional: suma de indicadores"),
+  reg_obs(d3a, d3a$sin_ss,            "MCO condicional: sólo sin_ss"),
+  data.frame(especificacion = "Valor verdadero", estimacion = verdad$beta_INF,
+             ic_inf = NA, ic_sup = NA)
+)
+kable(tab3a, digits = 3, row.names = FALSE)
+```
+
+* **Sin controles**, el efecto está sobreestimado en valor absoluto: incluye la
+  correlación entre informalidad y escolaridad.
+* **SEM condicional** recupera la penalización verdadera. Es evidencia a favor de la
+  validez nomológica de la medida.
+* Los enfoques con variables **observadas** quedan atenuados por el error de medición
+  (más con un solo indicador). La atenuación se agrava al condicionar: los controles
+  absorben parte de la varianza verdadera del constructo pero no la del error, de modo
+  que la fiabilidad del componente residual es menor que la fiabilidad marginal.
+
+## (b) Un índice que no mide lo que dice medir
+
+```{r c3b}
+f3b_med  <- cfa(mb$medida,        data = d3b)
+f3b_inc  <- sem(mb$incondicional, data = d3b)
+f3b_cond <- sem(mb$condicional,   data = d3b)
+kable(rbind(ajuste(f3b_med, "medida"), ajuste(f3b_cond, "estructural condicional")))
+kable(data.frame(omega = compRelSEM(f3b_med), AVE = AVE(f3b_med)), digits = 3)
+```
+
+```{r c3b-diagrama, fig.width=9, fig.height=6}
+diagrama(f3b_cond, "(b) Índice del hogar: modelo condicional",
+         layout = "tree2", rotation = 2, exoCov = FALSE)
+```
+
+Compare con el diagrama de (a): aquí la flecha `educ → F` es mucho más fuerte y la
+flecha `F → ln_w` es prácticamente cero.
+
+Con los criterios usuales de estructura interna, el índice **pasa**: ajuste
+excelente, cargas altas, omega de `r round(compRelSEM(f3b_med), 2)` y AVE de
+`r round(AVE(f3b_med), 2)`, en el umbral habitual de .50.
+
+```{r c3b-efecto}
+tab3b <- rbind(
+  efecto(f3b_inc,  "SEM sin controles"),
+  efecto(f3b_cond, "SEM condicional"),
+  reg_obs(d3b, rowSums(d3b[items_b]), "MCO condicional: suma de indicadores"),
+  data.frame(especificacion = "Penalización teórica esperada", estimacion = verdad$beta_INF,
+             ic_inf = NA, ic_sup = NA)
+)
+kable(tab3b, digits = 3, row.names = FALSE)
+```
+
+Sin controles, el "índice de informalidad" predice salarios con el signo esperado y
+con una magnitud similar a la del escenario (a). Un análisis apresurado lo tomaría
+como evidencia de validez de criterio. **Condicional en el capital humano, el efecto
+desaparece.** ¿Por qué? Veamos los determinantes del factor:
+
+```{r c3-r2}
+r2 <- data.frame(
+  escenario = c("(a) informalidad laboral", "(b) índice del hogar"),
+  coef_educ_std = c(
+    subset(standardizedSolution(f3a_cond), lhs == "F" & rhs == "educ")$est.std,
+    subset(standardizedSolution(f3b_cond), lhs == "F" & rhs == "educ")$est.std),
+  R2_factor = c(lavInspect(f3a_cond, "r2")["F"], lavInspect(f3b_cond, "r2")["F"])
+)
+kable(r2, digits = 3)
+```
+
+El factor del escenario (b) es, en buena medida, una aproximación a la escolaridad. Su
+asociación con el salario pasa por el capital humano, no por la informalidad. La
+**estructura interna correcta no garantiza la validez**: el factor existe y se mide
+con precisión, pero no es el constructo que la teoría necesita.
+
+## Precauciones al usar la predicción condicional como evidencia
+
+* La prueba es tan buena como la teoría. Un efecto nulo puede indicar mala
+  medición o una teoría equivocada (p. ej., ausencia de penalización en ciertos
+  mercados). Conviene contar con varias predicciones de la red nomológica: duración
+  del empleo, acceso a crédito, volatilidad del ingreso.
+* El modelo MIMIC supone que los controles afectan a los indicadores **sólo a través
+  del factor**. Los efectos directos (p. ej., `mujer → sin_prest`) son no invariancia
+  y deben revisarse con `modindices()` o con modelos multigrupo.
+* Hay que evitar el **sobrecontrol**: no condicionar en variables que son
+  consecuencia de la informalidad (p. ej., horas trabajadas o tipo de ocupación, si se
+  determinan a la vez).
+* Aquí el PGD está diseñado para que la relación sea "causal". Con datos reales, la
+  penalización por informalidad es objeto de debate (selección, heterogeneidad).
+  Para validar la medida importa que la asociación condicional tenga el signo y la
+  magnitud que predice la teoría, no identificar el efecto causal.
+
+## Para discutir
+
+1. ¿Qué otras variables de la red nomológica de la informalidad podrían usarse como
+   evidencia convergente o discriminante?
+2. Combine los casos 1 y 3: si el factor de autoempleo afectara también al salario,
+   ¿qué le pasaría a $\hat\beta_{INF}$ en un modelo que ignora `AUTO`?
+3. ¿Por qué la atenuación del índice sumado es mayor en la regresión condicional que
+   en la incondicional?
+
+---
+
+# Síntesis {-}
+
+| Lección | Caso |
+|---|---|
+| La independencia local es un supuesto **sustantivo**: su violación introduce varianza sistemática irrelevante al constructo y redefine el factor. | 1 |
+| Los índices de modificación muestran síntomas, no causas. Modelos equivalentes requieren decisiones teóricas. | 1 |
+| Fiabilidad (alfa, omega) alta no implica validez. | 1, 3b |
+| El error de medición tiene un componente aleatorio, que se promedia al agregar indicadores, y uno sistemático, que no se promedia. Conviene reportar ambos por indicador y por puntaje. | 1 |
+| Más dimensiones siempre ajustan igual o mejor; la multidimensionalidad requiere validez discriminante entre dimensiones. | 2 |
+| El AVE mide la magnitud de las cargas, no la dimensionalidad ni la validez. | 2 |
+| La evidencia de "relaciones con otras variables" debe ser **condicional** a lo que la teoría controla, y estimarse a nivel latente para evitar atenuación. | 3 |
+
+# Apéndice: Caso 1 con indicadores binarios (WLSMV) {- #apendice}
+
+```{r apendice}
+d1_bin <- read.csv("data/c1_dependencia_local_binaria.csv")
+colMeans(d1_bin)   # prevalencias
+
+f1_uni_bin <- cfa(m1_uni, data = d1_bin, ordered = TRUE, std.lv = TRUE)
+f1_bif_bin <- cfa(m1_bif, data = d1_bin, ordered = TRUE, std.lv = TRUE)
+
+ajuste_esc <- function(fit, nombre) {
+  fm <- fitMeasures(fit, c("chisq.scaled", "df.scaled", "pvalue.scaled",
+                           "cfi.scaled", "rmsea.scaled", "srmr"))
+  v <- setNames(round(as.numeric(fm), 3), names(fm))
+  data.frame(modelo = nombre, as.list(v), check.names = FALSE)
+}
+kable(rbind(ajuste_esc(f1_uni_bin, "1 factor"), ajuste_esc(f1_bif_bin, "INF + AUTO")))
+lavTestLRT(f1_uni_bin, f1_bif_bin)   # diferencia de chi^2 ajustada (DIFFTEST)
+kable(merge(cargas_std(f1_uni_bin), cargas_std(f1_bif_bin),
+            by = c("factor", "indicador"), all = TRUE,
+            suffixes = c("_1factor", "_bifactor")), digits = 2)
+```
+
+```{r apendice-diagramas, fig.width=7, fig.height=5, fig.show="hold", out.width="50%"}
+diagrama(f1_uni_bin, "Binario: un factor")
+diagrama(f1_bif_bin, "Binario: INF + AUTO", layout = "tree2",
+         bifactor = "INF", exoCov = FALSE)
+```
+
+Las conclusiones se mantienen con indicadores binarios: el modelo de un factor
+desajusta y sobrecarga los indicadores contractuales. Con indicadores binarios, las
+cargas estandarizadas se refieren a las respuestas latentes $y^*$ (correlaciones
+tetracóricas).
+
+# Referencias {-}
+
+* AERA, APA y NCME (2014). *Standards for Educational and Psychological Testing*.
+* Cronbach, L. J. y Meehl, P. E. (1955). Construct validity in psychological tests. *Psychological Bulletin*, 52, 281–302.
+* Campbell, D. T. y Fiske, D. W. (1959). Convergent and discriminant validation by the multitrait-multimethod matrix. *Psychological Bulletin*, 56, 81–105.
+* Messick, S. (1995). Validity of psychological assessment. *American Psychologist*, 50, 741–749.
+* Fornell, C. y Larcker, D. F. (1981). Evaluating structural equation models with unobservable variables and measurement error. *Journal of Marketing Research*, 18, 39–50.
+* Henseler, J., Ringle, C. M. y Sarstedt, M. (2015). A new criterion for assessing discriminant validity in variance-based SEM. *Journal of the Academy of Marketing Science*, 43, 115–135.
+* Rönkkö, M. y Cho, E. (2022). An updated guideline for assessing discriminant validity. *Organizational Research Methods*, 25, 6–47.
+* Reise, S. P. (2012). The rediscovery of bifactor measurement models. *Multivariate Behavioral Research*, 47, 667–696.
+* Bollen, K. A. (1989). *Structural Equations with Latent Variables*. Wiley.
